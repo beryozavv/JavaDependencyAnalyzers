@@ -1,0 +1,33 @@
+plugins {
+    id 'java'
+    id 'application'
+}
+
+group = 'com.beryozavv'
+version = '1.0-SNAPSHOT'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'com.github.javaparser:javaparser-core:3.26.4'
+    implementation 'com.github.javaparser:javaparser-symbol-solver-core:3.26.4'
+    implementation 'org.slf4j:slf4j-simple:2.0.9'
+    testImplementation platform('org.junit:junit-bom:5.10.0')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+}
+
+application {
+    mainClass = 'com.beryozavv.DependencyAnalyzer'
+}
+
+test {
+    useJUnitPlatform()
+}
