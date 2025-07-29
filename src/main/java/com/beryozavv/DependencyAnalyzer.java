@@ -3,11 +3,11 @@ package com.beryozavv;
 import com.github.javaparser.StaticJavaParser;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.Node;
-import com.github.javaparser.ast.expr.NameExpr;
-import com.github.javaparser.ast.expr.MethodCallExpr;
+import com.github.javaparser.ast.body.*;
+import com.github.javaparser.ast.expr.*;
+import com.github.javaparser.ast.stmt.CatchClause;
+import com.github.javaparser.ast.type.ClassOrInterfaceType;
 import com.github.javaparser.ast.visitor.VoidVisitorAdapter;
-import com.github.javaparser.resolution.UnsolvedSymbolException;
-import com.github.javaparser.resolution.declarations.*;
 import com.github.javaparser.symbolsolver.JavaSymbolSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.CombinedTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.JarTypeSolver;
@@ -64,31 +64,107 @@ public class DependencyAnalyzer {
                     handleNode(n);
                     super.visit(n, arg);
                 }
+
                 @Override
-                public void visit(MethodCallExpr m, Object arg) {
-                    handleNode(m);
-                    super.visit(m, arg);
+                public void visit(MethodCallExpr n, Object arg) {
+                    handleNode(n);
+                    super.visit(n, arg);
                 }
+
+                @Override
+                public void visit(ObjectCreationExpr n, Object arg) {
+                    handleNode(n.getType()); // тип создаваемого объекта
+                    super.visit(n, arg);
+                }
+
+                @Override
+                public void visit(ClassOrInterfaceType n, Object arg) {
+                    handleNode(n);
+                    super.visit(n, arg);
+                }
+
+                @Override
+                public void visit(VariableDeclarator n, Object arg) {
+                    handleNode(n.getType());
+                    super.visit(n, arg);
+                }
+
+                @Override
+                public void visit(FieldDeclaration n, Object arg) {
+                    handleNode(n.getElementType()); // тип поля
+                    super.visit(n, arg);
+                }
+
+                @Override
+                public void visit(MethodDeclaration n, Object arg) {
+                    handleNode(n.getType()); // возвращаемый тип
+                    for (Parameter p : n.getParameters()) {
+                        handleNode(p.getType());
+                    }
+                    super.visit(n, arg);
+                }
+
+                @Override
+                public void visit(ConstructorDeclaration n, Object arg) {
+                    for (Parameter p : n.getParameters()) {
+                        handleNode(p.getType());
+                    }
+                    super.visit(n, arg);
+                }
+
+                @Override
+                public void visit(FieldAccessExpr n, Object arg) {
+                    handleNode(n.getScope()); // System.out.println → System
+                    super.visit(n, arg);
+                }
+
+                @Override
+                public void visit(ClassExpr n, Object arg) {
+                    handleNode(n.getType()); // SomeClass.class
+                    super.visit(n, arg);
+                }
+
+                @Override
+                public void visit(CatchClause n, Object arg) {
+                    handleNode(n.getParameter().getType());
+                    super.visit(n, arg);
+                }
+
+                @Override
+                public void visit(CastExpr n, Object arg) {
+                    handleNode(n.getType()); // (SomeType) value
+                    super.visit(n, arg);
+                }
+
+                @Override
+                public void visit(TypeExpr n, Object arg) {
+                    handleNode(n.getType());
+                    super.visit(n, arg);
+                }
+
+                @Override
+                public void visit(InstanceOfExpr n, Object arg) {
+                    handleNode(n.getType());
+                    super.visit(n, arg);
+                }
+
                 private void handleNode(Node n) {
                     int line = n.getRange().map(r -> r.begin.line).orElse(-1);
                     try {
-                        ResolvedDeclaration decl = symbolSolver.resolveDeclaration(n, ResolvedDeclaration.class);
-                        String qualified;
-                        if (decl instanceof ResolvedReferenceTypeDeclaration) {
-                            qualified = ((ResolvedReferenceTypeDeclaration) decl).getQualifiedName();
-                        } else if (decl instanceof ResolvedMethodDeclaration) {
-                            qualified = ((ResolvedMethodDeclaration) decl).getQualifiedSignature();
-                        } else if (decl instanceof ResolvedFieldDeclaration) {
-                            qualified = ((ResolvedFieldDeclaration) decl).getType().describe();
-                        } else {
-                            qualified = decl.getName();
-                        }
-                        String dependency = findDependencyForType(qualified, libsDir);
-                        if (dependency != null) {
-                            lineDeps.put(line, dependency);
-                        }
-                    } catch (UnsolvedSymbolException | UnsupportedOperationException e) {
-                        // игнорируем ошибки разрешения
+                        String nameUsed = n.toString(); // или n.asString() / n.getNameAsString() если точно знаем тип
+                        lineDeps.put(line, nameUsed);
+//                        for (ImportDeclaration imp : cu.getImports()) {
+//                            String importName = imp.getNameAsString();
+//                            boolean isAsterisk = imp.isAsterisk();
+//
+//                            if (!isAsterisk && importName.endsWith("." + nameUsed)) {
+//                                lineDeps.put(line, importName);
+//                                break;
+//                            } else if (isAsterisk && nameUsed.indexOf('.') == -1) {
+//                                lineDeps.put(line, importName + ".*");
+//                                break;
+//                            }
+//                        }
                     } catch (Exception e) {
                         System.err.println("Error at line " + line + ": " + e.getMessage());
                     }
@@ -99,7 +175,9 @@ public class DependencyAnalyzer {
 
         usageMap.forEach((file, deps) -> {
             System.out.println("File: " + file);
-            deps.forEach((line, dep) -> System.out.printf("  Line %d -> %s%n", line, dep));
+            deps.entrySet().stream()
+                    .sorted(Map.Entry.comparingByKey()) // сортировка по line (ключу)
+                    .forEach(entry -> System.out.printf("  Line %d -> %s%n", entry.getKey(), entry.getValue()));
         });
     }
 
