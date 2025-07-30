@@ -19,7 +19,6 @@ import com.github.javaparser.symbolsolver.resolution.typesolvers.*;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -36,8 +35,9 @@ public class DependencyAnalyzer {
         CombinedTypeSolver typeSolver = new CombinedTypeSolver();
         //typeSolver.add(new JreTypeSolver());
         typeSolver.add(new ReflectionTypeSolver(true));
-        //typeSolver.add(new ClassLoaderTypeSolver(Thread.currentThread().getContextClassLoader()));
-        typeSolver.add(new JavaParserTypeSolver(sourceRoot));
+        //typeSolver.add(new JarTypeSolver());
+        typeSolver.add(new ClassLoaderTypeSolver(Thread.currentThread().getContextClassLoader()));
+        //typeSolver.add(new JavaParserTypeSolver(sourceRoot));
 
         PathResult pathResult = MyGradleConnector.GetClassAndSourcePaths(sourceRoot);
         TypeSolverUtil.addPathsToTypeSolver(typeSolver, pathResult);
