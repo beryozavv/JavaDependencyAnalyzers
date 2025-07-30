@@ -24,6 +24,7 @@ dependencies {
     implementation 'com.github.javaparser:javaparser-symbol-solver-core:3.26.4'
     implementation 'org.slf4j:slf4j-simple:2.0.9'
     implementation 'org.gradle:gradle-tooling-api:8.13' // или ваша целевая версия Gradle
+    implementation 'org.eclipse.jdt:org.eclipse.jdt.core:3.36.0'
 
     testImplementation platform('org.junit:junit-bom:5.10.0')
     testImplementation 'org.junit.jupiter:junit-jupiter'
