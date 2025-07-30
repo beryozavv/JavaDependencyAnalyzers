@@ -34,8 +34,9 @@ public class DependencyAnalyzer {
         Path libsDir = Path.of(args[1]);
 
         CombinedTypeSolver typeSolver = new CombinedTypeSolver();
-        typeSolver.add(new ReflectionTypeSolver());
-        typeSolver.add(new ClassLoaderTypeSolver(Thread.currentThread().getContextClassLoader()));
+        //typeSolver.add(new JreTypeSolver());
+        typeSolver.add(new ReflectionTypeSolver(true));
+        //typeSolver.add(new ClassLoaderTypeSolver(Thread.currentThread().getContextClassLoader()));
         typeSolver.add(new JavaParserTypeSolver(sourceRoot));
         String sep = System.getProperty("path.separator");
         try (Stream<Path> jarFiles = Files.list(libsDir)) {
@@ -191,12 +192,12 @@ public class DependencyAnalyzer {
             }
 
             private void handleNode(Node n) {
-                DependencyAnalyzer.handleNode(n, symbolSolver, lineDeps);
+                DependencyAnalyzer.handleNode(n, symbolSolver, lineDeps, cu);
             }
         }, null);
     }
 
-    private static void handleNode(Node n, JavaSymbolSolver symbolSolver, Map<Integer, List<String>> lineDeps) {
+    private static void handleNode(Node n, JavaSymbolSolver symbolSolver, Map<Integer, List<String>> lineDeps, CompilationUnit cu) {
         int line = n.getRange().map(r -> r.begin.line).orElse(-1);
         try {
             List<String> possibleImports = new ArrayList<>();
@@ -204,7 +205,7 @@ public class DependencyAnalyzer {
                 ResolvedMethodDeclaration m = symbolSolver
                         .resolveDeclaration(n, ResolvedMethodDeclaration.class);
                 String declaringType = m.declaringType().getQualifiedName();
-                possibleImports.add("import static " + declaringType);
+                possibleImports.add("static " + declaringType);
                 // wildcard статический импорт всего класса
                 //possibleImports.add("import static " + declaringType + ".*;");
             } else if (n instanceof FieldAccessExpr) {
@@ -213,81 +214,87 @@ public class DependencyAnalyzer {
                     ResolvedFieldDeclaration fld = (ResolvedFieldDeclaration) f;
                     String declaringType = fld.declaringType().getQualifiedName();
 
-                    possibleImports.add("import static " + declaringType);
+                    possibleImports.add("static " + declaringType);
                     //possibleImports.add("import static " + declaringType + ".*;");
                 }
             } else if (n instanceof ObjectCreationExpr objectCreationExpr) {
                 ResolvedType resolvedType = objectCreationExpr.calculateResolvedType();
                 String fqn = ((ResolvedReferenceType) resolvedType).getQualifiedName();
-                possibleImports.add("import static " + fqn);
+                possibleImports.add("static " + fqn);
             } else if (n instanceof NameExpr nameExpr) {
                 var typeName = Resolve(nameExpr);
-                possibleImports.add("import " + typeName + ";");
+                possibleImports.add(typeName + ";");
             } else if (n instanceof ClassOrInterfaceType classOrInterfaceType) {
                 ResolvedReferenceType resolvedType = (ResolvedReferenceType) classOrInterfaceType.resolve();
                 String fqn = resolvedType.getQualifiedName();
-                possibleImports.add("import " + fqn + ";");
+                possibleImports.add(fqn + ";");
 
             } else if (n instanceof VariableDeclarator) {
                 VariableDeclarator vd = (VariableDeclarator) n;
                 ResolvedType rt = vd.getType().resolve();
                 if (rt.isReferenceType()) {
                     String qn = rt.asReferenceType().getQualifiedName();
-                    possibleImports.add("import " + qn + ";");
+                    possibleImports.add(qn + ";");
                 }
             } else if (n instanceof MethodDeclaration) {
                 MethodDeclaration md = (MethodDeclaration) n;
                 // return type
                 ResolvedType ret = md.getType().resolve();
                 if (ret.isReferenceType()) {
-                    possibleImports.add("import " + ret.asReferenceType().getQualifiedName() + ";");
+                    possibleImports.add(ret.asReferenceType().getQualifiedName() + ";");
                 }
                 // parameter types
                 for (Parameter p : md.getParameters()) {
                     ResolvedType pt = p.getType().resolve();
                     if (pt.isReferenceType()) {
-                        possibleImports.add("import " + pt.asReferenceType().getQualifiedName() + ";");
+                        possibleImports.add(pt.asReferenceType().getQualifiedName() + ";");
                     }
+                }
+
+            } else if (n instanceof FieldDeclaration fieldDeclaration) {
+                ResolvedFieldDeclaration resolve = fieldDeclaration.resolve();
+                ResolvedType rt = resolve.getType();
+                if (rt.isReferenceType()) {
+                    possibleImports.add(rt.asReferenceType().getQualifiedName() + ";");
                 }
             } else if (n instanceof ConstructorDeclaration) {
                 ConstructorDeclaration cd = (ConstructorDeclaration) n;
                 ResolvedConstructorDeclaration cons = symbolSolver
                         .resolveDeclaration(cd, ResolvedConstructorDeclaration.class);
                 String declaringType = cons.declaringType().getQualifiedName();
-                possibleImports.add("import " + declaringType + ";");
+                possibleImports.add(declaringType + ";");
                 // parameter types
                 for (Parameter p : cd.getParameters()) {
                     ResolvedType pt = p.getType().resolve();
                     if (pt.isReferenceType()) {
-                        possibleImports.add("import " + pt.asReferenceType().getQualifiedName() + ";");
+                        possibleImports.add(pt.asReferenceType().getQualifiedName() + ";");
                     }
                 }
             } else if (n instanceof ClassExpr) {
                 ClassExpr ce = (ClassExpr) n;
                 ResolvedType rt = ce.getType().resolve();
                 if (rt.isReferenceType()) {
-                    possibleImports.add("import " + rt.asReferenceType().getQualifiedName() + ";");
+                    possibleImports.add(rt.asReferenceType().getQualifiedName() + ";");
                 }
             } else if (n instanceof CatchClause) {
                 CatchClause cc = (CatchClause) n;
-                for (var t : cc.getParameter().getType().asUnionType()
-                        .getElements()) {
-                    ResolvedType rt = t.resolve();
-                    if (rt.isReferenceType()) {
-                        possibleImports.add("import " + rt.asReferenceType().getQualifiedName() + ";");
-                    }
+                var t = cc.getParameter().getType().asClassOrInterfaceType();
+                ResolvedType rt = t.resolve();
+                if (rt.isReferenceType()) {
+                    possibleImports.add(rt.asReferenceType().getQualifiedName() + ";");
                 }
+
             } else if (n instanceof TypeExpr) {
                 TypeExpr te = (TypeExpr) n;
                 ResolvedType rt = te.getType().resolve();
                 if (rt.isReferenceType()) {
-                    possibleImports.add("import " + rt.asReferenceType().getQualifiedName() + ";");
+                    possibleImports.add(rt.asReferenceType().getQualifiedName() + ";");
                 }
             } else if (n instanceof InstanceOfExpr) {
                 InstanceOfExpr ioe = (InstanceOfExpr) n;
                 ResolvedType rt = ioe.getType().resolve();
                 if (rt.isReferenceType()) {
-                    possibleImports.add("import " + rt.asReferenceType().getQualifiedName() + ";");
+                    possibleImports.add(rt.asReferenceType().getQualifiedName() + ";");
                 }
             }
 //            // record unique imports
@@ -299,21 +306,21 @@ public class DependencyAnalyzer {
 //            }
             else {
                 if (n instanceof PrimitiveType primitiveType) {
-                    possibleImports.add("import " + primitiveType.getType().name() + ";");
+                    possibleImports.add(primitiveType.getType().name() + ";");
                 } else if (n instanceof ArrayType arrayType) {
-                    possibleImports.add("import " + arrayType.getComponentType().toString() + ";");
+                    possibleImports.add(arrayType.getComponentType().toString() + ";");
                 }
                 // все остальные — пробуем тип
                 ResolvedType rt = symbolSolver.calculateType((Expression) n);
                 if (rt.isReferenceType()) {
                     String qName = rt.asReferenceType().getQualifiedName();
                     // точный импорт класса
-                    possibleImports.add("import " + qName + ";");
+                    possibleImports.add(qName + ";");
                     // wildcard‑импорт его пакета
                     int lastDot = qName.lastIndexOf('.');
                     if (lastDot > 0) {
                         String pkg = qName.substring(0, lastDot);
-                        //possibleImports.add("import " + pkg + ".*;");
+                        //possibleImports.add( pkg + ".*;");
                     }
                 }
             }
@@ -324,9 +331,11 @@ public class DependencyAnalyzer {
                 lineDeps.put(line, uniq);
             }
         } catch (UnsolvedSymbolException | UnsupportedOperationException e) {
-            System.err.println("Error UnsolvedSymbolException in node " + n + " at line " + line + ": " + e.getMessage());
+            Optional<Path> path = cu.getStorage().map(storage -> storage.getPath());
+            System.err.println("Error UnsolvedSymbolException in node " + n + "; In File " + path + " at line " + line + ": " + e.getMessage());
         } catch (Exception e) {
-            System.err.println("Error Exception in node " + n + " at line " + line + ": " + e.getMessage());
+            Optional<Path> path = cu.getStorage().map(storage -> storage.getPath());
+            System.err.println("Error Exception in node " + n + "; In File " + path + " at line " + line + ": " + e.getMessage());
         }
     }
 
