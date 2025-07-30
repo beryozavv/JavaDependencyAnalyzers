@@ -6,19 +6,21 @@ import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.body.*;
 import com.github.javaparser.ast.expr.*;
 import com.github.javaparser.ast.stmt.CatchClause;
+import com.github.javaparser.ast.type.ArrayType;
 import com.github.javaparser.ast.type.ClassOrInterfaceType;
+import com.github.javaparser.ast.type.PrimitiveType;
 import com.github.javaparser.ast.visitor.VoidVisitorAdapter;
+import com.github.javaparser.resolution.UnsolvedSymbolException;
+import com.github.javaparser.resolution.declarations.*;
+import com.github.javaparser.resolution.types.ResolvedReferenceType;
+import com.github.javaparser.resolution.types.ResolvedType;
 import com.github.javaparser.symbolsolver.JavaSymbolSolver;
-import com.github.javaparser.symbolsolver.resolution.typesolvers.CombinedTypeSolver;
-import com.github.javaparser.symbolsolver.resolution.typesolvers.JarTypeSolver;
-import com.github.javaparser.symbolsolver.resolution.typesolvers.JavaParserTypeSolver;
-import com.github.javaparser.symbolsolver.resolution.typesolvers.ReflectionTypeSolver;
+import com.github.javaparser.symbolsolver.resolution.typesolvers.*;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.nio.file.Paths;
+import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -33,14 +35,37 @@ public class DependencyAnalyzer {
 
         CombinedTypeSolver typeSolver = new CombinedTypeSolver();
         typeSolver.add(new ReflectionTypeSolver());
+        typeSolver.add(new ClassLoaderTypeSolver(Thread.currentThread().getContextClassLoader()));
         typeSolver.add(new JavaParserTypeSolver(sourceRoot));
-        try (Stream<Path> jars = Files.list(libsDir)) {
-            jars.filter(p -> p.toString().endsWith(".jar"))
+        String sep = System.getProperty("path.separator");
+        try (Stream<Path> jarFiles = Files.list(libsDir)) {
+            jarFiles
+                    .filter(p -> p.toString().endsWith(".jar"))
                     .forEach(jar -> {
                         try {
                             typeSolver.add(new JarTypeSolver(jar.toAbsolutePath().toString()));
                         } catch (Exception e) {
                             System.err.println("Failed to add jar: " + jar + ", " + e.getMessage());
+                        }
+                    });
+        }
+
+        // Обработка ClassPath.txt
+        try (Stream<Path> cpFiles = Files.list(libsDir)) {
+            cpFiles
+                    .filter(p -> p.toString().endsWith("ClassPath.txt"))
+                    .forEach(classPath -> {
+                        try {
+                            String cp = Files.readString(classPath).trim();
+                            for (String entry : cp.split(sep)) {
+                                if (entry.endsWith(".jar")) {
+                                    typeSolver.add(new JarTypeSolver(entry));
+                                } else {
+                                    typeSolver.add(new JavaParserTypeSolver(Paths.get(entry)));
+                                }
+                            }
+                        } catch (Exception e) {
+                            System.err.println("Failed to add classPath: " + classPath + ", " + e.getMessage());
                         }
                     });
         }
@@ -53,147 +78,305 @@ public class DependencyAnalyzer {
             javaFiles = files.filter(p -> p.toString().endsWith(".java")).collect(Collectors.toList());
         }
 
-        Map<Path, Map<Integer, String>> usageMap = new HashMap<>();
+        Map<Path, Map<Integer, List<String>>> usageMap = new HashMap<>();
 
         for (Path file : javaFiles) {
             CompilationUnit cu = StaticJavaParser.parse(file);
-            Map<Integer, String> lineDeps = new HashMap<>();
-            cu.accept(new VoidVisitorAdapter<>() {
-                @Override
-                public void visit(NameExpr n, Object arg) {
-                    handleNode(n);
-                    super.visit(n, arg);
-                }
-
-                @Override
-                public void visit(MethodCallExpr n, Object arg) {
-                    handleNode(n);
-                    super.visit(n, arg);
-                }
-
-                @Override
-                public void visit(ObjectCreationExpr n, Object arg) {
-                    handleNode(n.getType()); // тип создаваемого объекта
-                    super.visit(n, arg);
-                }
-
-                @Override
-                public void visit(ClassOrInterfaceType n, Object arg) {
-                    handleNode(n);
-                    super.visit(n, arg);
-                }
-
-                @Override
-                public void visit(VariableDeclarator n, Object arg) {
-                    handleNode(n.getType());
-                    super.visit(n, arg);
-                }
-
-                @Override
-                public void visit(FieldDeclaration n, Object arg) {
-                    handleNode(n.getElementType()); // тип поля
-                    super.visit(n, arg);
-                }
-
-                @Override
-                public void visit(MethodDeclaration n, Object arg) {
-                    handleNode(n.getType()); // возвращаемый тип
-                    for (Parameter p : n.getParameters()) {
-                        handleNode(p.getType());
-                    }
-                    super.visit(n, arg);
-                }
-
-                @Override
-                public void visit(ConstructorDeclaration n, Object arg) {
-                    for (Parameter p : n.getParameters()) {
-                        handleNode(p.getType());
-                    }
-                    super.visit(n, arg);
-                }
-
-                @Override
-                public void visit(FieldAccessExpr n, Object arg) {
-                    handleNode(n.getScope()); // System.out.println → System
-                    super.visit(n, arg);
-                }
-
-                @Override
-                public void visit(ClassExpr n, Object arg) {
-                    handleNode(n.getType()); // SomeClass.class
-                    super.visit(n, arg);
-                }
-
-                @Override
-                public void visit(CatchClause n, Object arg) {
-                    handleNode(n.getParameter().getType());
-                    super.visit(n, arg);
-                }
-
-                @Override
-                public void visit(CastExpr n, Object arg) {
-                    handleNode(n.getType()); // (SomeType) value
-                    super.visit(n, arg);
-                }
-
-                @Override
-                public void visit(TypeExpr n, Object arg) {
-                    handleNode(n.getType());
-                    super.visit(n, arg);
-                }
-
-                @Override
-                public void visit(InstanceOfExpr n, Object arg) {
-                    handleNode(n.getType());
-                    super.visit(n, arg);
-                }
-
-                private void handleNode(Node n) {
-                    int line = n.getRange().map(r -> r.begin.line).orElse(-1);
-                    try {
-                        String nameUsed = n.toString(); // или n.asString() / n.getNameAsString() если точно знаем тип
-                        lineDeps.put(line, nameUsed);
-//                        for (ImportDeclaration imp : cu.getImports()) {
-//                            String importName = imp.getNameAsString();
-//                            boolean isAsterisk = imp.isAsterisk();
-//
-//                            if (!isAsterisk && importName.endsWith("." + nameUsed)) {
-//                                lineDeps.put(line, importName);
-//                                break;
-//                            } else if (isAsterisk && nameUsed.indexOf('.') == -1) {
-//                                lineDeps.put(line, importName + ".*");
-//                                break;
-//                            }
-//                        }
-                    } catch (Exception e) {
-                        System.err.println("Error at line " + line + ": " + e.getMessage());
-                    }
-                }
-            }, null);
+            Map<Integer, List<String>> lineDeps = new HashMap<>();
+            getAccept(cu, symbolSolver, lineDeps);
             usageMap.put(file, lineDeps);
         }
 
         usageMap.forEach((file, deps) -> {
             System.out.println("File: " + file);
             deps.entrySet().stream()
-                    .sorted(Map.Entry.comparingByKey()) // сортировка по line (ключу)
-                    .forEach(entry -> System.out.printf("  Line %d -> %s%n", entry.getKey(), entry.getValue()));
+                    .sorted(Map.Entry.comparingByKey())
+                    .forEach(e -> {
+                        System.out.printf("  Line %d -> %s%n",
+                                e.getKey(), String.join(", ", e.getValue()));
+                    });
         });
+//        usageMap.forEach((file, deps) -> {
+//            System.out.println("File: " + file);
+//            deps.entrySet().stream()
+//                    .sorted(Map.Entry.comparingByKey()) // сортировка по line (ключу)
+//                    .forEach(entry -> System.out.printf("  Line %d -> %s%n", entry.getKey(), entry.getValue()));
+//        });
     }
 
-    private static String findDependencyForType(String qualifiedName, Path libsDir) {
-        try (Stream<Path> jars = Files.list(libsDir)) {
-            for (Path jar : jars.filter(p -> p.toString().endsWith(".jar")).collect(Collectors.toList())) {
-                try (var jf = new java.util.jar.JarFile(jar.toFile())) {
-                    String entry = qualifiedName.replace('.', '/') + ".class";
-                    if (jf.getEntry(entry) != null) {
-                        return jar.getFileName().toString();
+    private static void getAccept(CompilationUnit cu, JavaSymbolSolver symbolSolver, Map<Integer, List<String>> lineDeps) {
+        cu.accept(new VoidVisitorAdapter<>() {
+            @Override
+            public void visit(NameExpr n, Object arg) {
+                handleNode(n);
+                super.visit(n, arg);
+            }
+
+            @Override
+            public void visit(MethodCallExpr n, Object arg) {
+                handleNode(n);
+                super.visit(n, arg);
+            }
+
+            @Override
+            public void visit(ObjectCreationExpr n, Object arg) {
+                handleNode(n); // тип создаваемого объекта
+                super.visit(n, arg);
+            }
+
+            @Override
+            public void visit(ClassOrInterfaceType n, Object arg) {
+                handleNode(n);
+                super.visit(n, arg);
+            }
+
+            @Override
+            public void visit(VariableDeclarator n, Object arg) {
+                handleNode(n); // тип создаваемого объекта
+                super.visit(n, arg);
+            }
+
+            @Override
+            public void visit(FieldDeclaration n, Object arg) {
+                handleNode(n); // тип создаваемого объекта
+                super.visit(n, arg);
+            }
+
+            @Override
+            public void visit(MethodDeclaration n, Object arg) {
+                handleNode(n); // тип создаваемого объекта
+                super.visit(n, arg);
+            }
+
+            @Override
+            public void visit(ConstructorDeclaration n, Object arg) {
+                handleNode(n); // тип создаваемого объекта
+                super.visit(n, arg);
+            }
+
+            @Override
+            public void visit(FieldAccessExpr n, Object arg) {
+                handleNode(n); // тип создаваемого объекта
+                super.visit(n, arg);
+            }
+
+            @Override
+            public void visit(ClassExpr n, Object arg) {
+                handleNode(n); // тип создаваемого объекта
+                super.visit(n, arg);
+            }
+
+            @Override
+            public void visit(CatchClause n, Object arg) {
+                handleNode(n); // тип создаваемого объекта
+                super.visit(n, arg);
+            }
+
+            @Override
+            public void visit(CastExpr n, Object arg) {
+                handleNode(n); // тип создаваемого объекта
+                super.visit(n, arg);
+            }
+
+            @Override
+            public void visit(TypeExpr n, Object arg) {
+                handleNode(n); // тип создаваемого объекта
+                super.visit(n, arg);
+            }
+
+            @Override
+            public void visit(InstanceOfExpr n, Object arg) {
+                handleNode(n); // тип создаваемого объекта
+                super.visit(n, arg);
+            }
+
+            private void handleNode(Node n) {
+                DependencyAnalyzer.handleNode(n, symbolSolver, lineDeps);
+            }
+        }, null);
+    }
+
+    private static void handleNode(Node n, JavaSymbolSolver symbolSolver, Map<Integer, List<String>> lineDeps) {
+        int line = n.getRange().map(r -> r.begin.line).orElse(-1);
+        try {
+            List<String> possibleImports = new ArrayList<>();
+            if (n instanceof MethodCallExpr) {
+                ResolvedMethodDeclaration m = symbolSolver
+                        .resolveDeclaration(n, ResolvedMethodDeclaration.class);
+                String declaringType = m.declaringType().getQualifiedName();
+                possibleImports.add("import static " + declaringType);
+                // wildcard статический импорт всего класса
+                //possibleImports.add("import static " + declaringType + ".*;");
+            } else if (n instanceof FieldAccessExpr) {
+                ResolvedValueDeclaration f = symbolSolver.resolveDeclaration(n, ResolvedValueDeclaration.class);
+                if (f instanceof ResolvedFieldDeclaration) {
+                    ResolvedFieldDeclaration fld = (ResolvedFieldDeclaration) f;
+                    String declaringType = fld.declaringType().getQualifiedName();
+
+                    possibleImports.add("import static " + declaringType);
+                    //possibleImports.add("import static " + declaringType + ".*;");
+                }
+            } else if (n instanceof ObjectCreationExpr objectCreationExpr) {
+                ResolvedType resolvedType = objectCreationExpr.calculateResolvedType();
+                String fqn = ((ResolvedReferenceType) resolvedType).getQualifiedName();
+                possibleImports.add("import static " + fqn);
+            } else if (n instanceof NameExpr nameExpr) {
+                var typeName = Resolve(nameExpr);
+                possibleImports.add("import " + typeName + ";");
+            } else if (n instanceof ClassOrInterfaceType classOrInterfaceType) {
+                ResolvedReferenceType resolvedType = (ResolvedReferenceType) classOrInterfaceType.resolve();
+                String fqn = resolvedType.getQualifiedName();
+                possibleImports.add("import " + fqn + ";");
+
+            } else if (n instanceof VariableDeclarator) {
+                VariableDeclarator vd = (VariableDeclarator) n;
+                ResolvedType rt = vd.getType().resolve();
+                if (rt.isReferenceType()) {
+                    String qn = rt.asReferenceType().getQualifiedName();
+                    possibleImports.add("import " + qn + ";");
+                }
+            } else if (n instanceof MethodDeclaration) {
+                MethodDeclaration md = (MethodDeclaration) n;
+                // return type
+                ResolvedType ret = md.getType().resolve();
+                if (ret.isReferenceType()) {
+                    possibleImports.add("import " + ret.asReferenceType().getQualifiedName() + ";");
+                }
+                // parameter types
+                for (Parameter p : md.getParameters()) {
+                    ResolvedType pt = p.getType().resolve();
+                    if (pt.isReferenceType()) {
+                        possibleImports.add("import " + pt.asReferenceType().getQualifiedName() + ";");
+                    }
+                }
+            } else if (n instanceof ConstructorDeclaration) {
+                ConstructorDeclaration cd = (ConstructorDeclaration) n;
+                ResolvedConstructorDeclaration cons = symbolSolver
+                        .resolveDeclaration(cd, ResolvedConstructorDeclaration.class);
+                String declaringType = cons.declaringType().getQualifiedName();
+                possibleImports.add("import " + declaringType + ";");
+                // parameter types
+                for (Parameter p : cd.getParameters()) {
+                    ResolvedType pt = p.getType().resolve();
+                    if (pt.isReferenceType()) {
+                        possibleImports.add("import " + pt.asReferenceType().getQualifiedName() + ";");
+                    }
+                }
+            } else if (n instanceof ClassExpr) {
+                ClassExpr ce = (ClassExpr) n;
+                ResolvedType rt = ce.getType().resolve();
+                if (rt.isReferenceType()) {
+                    possibleImports.add("import " + rt.asReferenceType().getQualifiedName() + ";");
+                }
+            } else if (n instanceof CatchClause) {
+                CatchClause cc = (CatchClause) n;
+                for (var t : cc.getParameter().getType().asUnionType()
+                        .getElements()) {
+                    ResolvedType rt = t.resolve();
+                    if (rt.isReferenceType()) {
+                        possibleImports.add("import " + rt.asReferenceType().getQualifiedName() + ";");
+                    }
+                }
+            } else if (n instanceof TypeExpr) {
+                TypeExpr te = (TypeExpr) n;
+                ResolvedType rt = te.getType().resolve();
+                if (rt.isReferenceType()) {
+                    possibleImports.add("import " + rt.asReferenceType().getQualifiedName() + ";");
+                }
+            } else if (n instanceof InstanceOfExpr) {
+                InstanceOfExpr ioe = (InstanceOfExpr) n;
+                ResolvedType rt = ioe.getType().resolve();
+                if (rt.isReferenceType()) {
+                    possibleImports.add("import " + rt.asReferenceType().getQualifiedName() + ";");
+                }
+            }
+//            // record unique imports
+//            lineDeps.putIfAbsent(line, new ArrayList<>());
+//            for (String imp : possibleImports) {
+//                if (!lineDeps.get(line).contains(imp)) {
+//                    lineDeps.get(line).add(imp);
+//                }
+//            }
+            else {
+                if (n instanceof PrimitiveType primitiveType) {
+                    possibleImports.add("import " + primitiveType.getType().name() + ";");
+                } else if (n instanceof ArrayType arrayType) {
+                    possibleImports.add("import " + arrayType.getComponentType().toString() + ";");
+                }
+                // все остальные — пробуем тип
+                ResolvedType rt = symbolSolver.calculateType((Expression) n);
+                if (rt.isReferenceType()) {
+                    String qName = rt.asReferenceType().getQualifiedName();
+                    // точный импорт класса
+                    possibleImports.add("import " + qName + ";");
+                    // wildcard‑импорт его пакета
+                    int lastDot = qName.lastIndexOf('.');
+                    if (lastDot > 0) {
+                        String pkg = qName.substring(0, lastDot);
+                        //possibleImports.add("import " + pkg + ".*;");
                     }
                 }
             }
+
+            if (!possibleImports.isEmpty()) {
+                // убираем дубликаты и сохраняем
+                List<String> uniq = possibleImports.stream().distinct().collect(Collectors.toList());
+                lineDeps.put(line, uniq);
+            }
+        } catch (UnsolvedSymbolException | UnsupportedOperationException e) {
+            System.err.println("Error UnsolvedSymbolException in node " + n + " at line " + line + ": " + e.getMessage());
         } catch (Exception e) {
-            // Игнорируем
+            System.err.println("Error Exception in node " + n + " at line " + line + ": " + e.getMessage());
         }
-        return null;
+    }
+
+    public static String Resolve(NameExpr n) {
+        ResolvedDeclaration resolvedDeclaration = n.resolve();
+
+        String fqn = null;
+        String symbolKind = "Unknown";
+
+        // Шаг 2: Определим тип разрешенного символа и извлечем FQN
+
+        if (resolvedDeclaration instanceof ResolvedTypeDeclaration) {
+            // Случай 1: NameExpr напрямую ссылается на тип (класс/интерфейс)
+            // Например: MyClass.someStaticMethod() -> NameExpr 'MyClass'
+            fqn = ((ResolvedTypeDeclaration) resolvedDeclaration).getQualifiedName();
+            symbolKind = "Type";
+
+        } else if (resolvedDeclaration instanceof ResolvedValueDeclaration) {
+            // Случай 2: NameExpr ссылается на переменную, поле или параметр
+            ResolvedValueDeclaration valueDecl = (ResolvedValueDeclaration) resolvedDeclaration;
+            ResolvedType type = valueDecl.getType();
+
+            if (type instanceof ResolvedReferenceType) {
+                // Если тип переменной/поля - ссылочный (не примитив), получаем его FQN
+                // Например: System.out.println() -> NameExpr 'System' разрешается в поле,
+                // тип которого ResolvedReferenceType для 'java.lang.System'
+                fqn = ((ResolvedReferenceType) type).getQualifiedName();
+                symbolKind = "Value (Type: " + type.describe() + ")";
+            } else {
+                // Тип примитивный (int, boolean и т.д.), FQN не применим напрямую
+                // Но мы можем получить FQN типа, в котором это поле/переменная объявлена, если нужно
+                symbolKind = "Value (Primitive Type: " + type.describe() + ")";
+                // Альтернативно, попробуем получить декларирующий тип:
+                fqn = resolvedDeclaration.getName();
+            }
+
+        } else if (resolvedDeclaration instanceof ResolvedMethodDeclaration) {
+            // Менее распространенный случай для NameExpr, но обработаем
+            ResolvedMethodDeclaration methodDecl = (ResolvedMethodDeclaration) resolvedDeclaration;
+            fqn = methodDecl.declaringType().getQualifiedName(); // FQN класса, где объявлен метод
+            symbolKind = "Method (declared in " + fqn + ")";
+
+        } else {
+            // Неожиданный тип разрешенного символа
+            symbolKind = resolvedDeclaration.getClass().getSimpleName();
+            // Попробуем получить FQN, если есть подходящий метод
+            if (resolvedDeclaration instanceof ResolvedReferenceTypeDeclaration) {
+                fqn = ((ResolvedReferenceTypeDeclaration) resolvedDeclaration).getQualifiedName();
+            }
+        }
+        return fqn;
     }
 }
