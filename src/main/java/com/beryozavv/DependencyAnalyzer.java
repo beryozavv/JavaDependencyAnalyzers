@@ -38,38 +38,9 @@ public class DependencyAnalyzer {
         typeSolver.add(new ReflectionTypeSolver(true));
         //typeSolver.add(new ClassLoaderTypeSolver(Thread.currentThread().getContextClassLoader()));
         typeSolver.add(new JavaParserTypeSolver(sourceRoot));
-        String sep = System.getProperty("path.separator");
-        try (Stream<Path> jarFiles = Files.list(libsDir)) {
-            jarFiles
-                    .filter(p -> p.toString().endsWith(".jar"))
-                    .forEach(jar -> {
-                        try {
-                            typeSolver.add(new JarTypeSolver(jar.toAbsolutePath().toString()));
-                        } catch (Exception e) {
-                            System.err.println("Failed to add jar: " + jar + ", " + e.getMessage());
-                        }
-                    });
-        }
 
-        // Обработка ClassPath.txt
-        try (Stream<Path> cpFiles = Files.list(libsDir)) {
-            cpFiles
-                    .filter(p -> p.toString().endsWith("ClassPath.txt"))
-                    .forEach(classPath -> {
-                        try {
-                            String cp = Files.readString(classPath).trim();
-                            for (String entry : cp.split(sep)) {
-                                if (entry.endsWith(".jar")) {
-                                    typeSolver.add(new JarTypeSolver(entry));
-                                } else {
-                                    typeSolver.add(new JavaParserTypeSolver(Paths.get(entry)));
-                                }
-                            }
-                        } catch (Exception e) {
-                            System.err.println("Failed to add classPath: " + classPath + ", " + e.getMessage());
-                        }
-                    });
-        }
+        PathResult pathResult = MyGradleConnector.GetClassAndSourcePaths(sourceRoot);
+        TypeSolverUtil.addPathsToTypeSolver(typeSolver, pathResult);
 
         JavaSymbolSolver symbolSolver = new JavaSymbolSolver(typeSolver);
         StaticJavaParser.getConfiguration().setSymbolResolver(symbolSolver);
