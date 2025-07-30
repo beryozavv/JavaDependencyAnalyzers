@@ -1,5 +1,6 @@
 package com.beryozavv;
 
+import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.StaticJavaParser;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.Node;
@@ -10,19 +11,19 @@ import com.github.javaparser.ast.type.ArrayType;
 import com.github.javaparser.ast.type.ClassOrInterfaceType;
 import com.github.javaparser.ast.type.PrimitiveType;
 import com.github.javaparser.ast.visitor.VoidVisitorAdapter;
+import com.github.javaparser.resolution.SymbolResolver;
 import com.github.javaparser.resolution.UnsolvedSymbolException;
 import com.github.javaparser.resolution.declarations.*;
 import com.github.javaparser.resolution.types.ResolvedReferenceType;
 import com.github.javaparser.resolution.types.ResolvedType;
-import com.github.javaparser.symbolsolver.JavaSymbolSolver;
-import com.github.javaparser.symbolsolver.resolution.typesolvers.*;
+import com.github.javaparser.symbolsolver.utils.SymbolSolverCollectionStrategy;
+import com.github.javaparser.utils.ProjectRoot;
+import com.github.javaparser.utils.SourceRoot;
+import com.github.javaparser.resolution.declarations.ResolvedMethodDeclaration;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.*;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 public class DependencyAnalyzer {
     public static void main(String[] args) throws Exception {
@@ -33,59 +34,29 @@ public class DependencyAnalyzer {
         Path sourceRoot = Path.of(args[0]);
         Path libsDir = Path.of(args[1]);
 
-        CombinedTypeSolver typeSolver = new CombinedTypeSolver();
-        //typeSolver.add(new JreTypeSolver());
-        typeSolver.add(new ReflectionTypeSolver(true));
-        //typeSolver.add(new ClassLoaderTypeSolver(Thread.currentThread().getContextClassLoader()));
-        typeSolver.add(new JavaParserTypeSolver(sourceRoot));
-        String sep = System.getProperty("path.separator");
-        try (Stream<Path> jarFiles = Files.list(libsDir)) {
-            jarFiles
-                    .filter(p -> p.toString().endsWith(".jar"))
-                    .forEach(jar -> {
-                        try {
-                            typeSolver.add(new JarTypeSolver(jar.toAbsolutePath().toString()));
-                        } catch (Exception e) {
-                            System.err.println("Failed to add jar: " + jar + ", " + e.getMessage());
-                        }
-                    });
-        }
+        // 2. Создаём SymbolSolverCollectionStrategy, который автоматически найдет
+        //    все .java и .jar из указанных директорий
+        ParserConfiguration parserConfig = new ParserConfiguration();
+        SymbolSolverCollectionStrategy strategy = new SymbolSolverCollectionStrategy(parserConfig);
+        ProjectRoot projectRoot = strategy.collect(sourceRoot);
 
-        // Обработка ClassPath.txt
-        try (Stream<Path> cpFiles = Files.list(libsDir)) {
-            cpFiles
-                    .filter(p -> p.toString().endsWith("ClassPath.txt"))
-                    .forEach(classPath -> {
-                        try {
-                            String cp = Files.readString(classPath).trim();
-                            for (String entry : cp.split(sep)) {
-                                if (entry.endsWith(".jar")) {
-                                    typeSolver.add(new JarTypeSolver(entry));
-                                } else {
-                                    typeSolver.add(new JavaParserTypeSolver(Paths.get(entry)));
-                                }
-                            }
-                        } catch (Exception e) {
-                            System.err.println("Failed to add classPath: " + classPath + ", " + e.getMessage());
-                        }
-                    });
-        }
-
-        JavaSymbolSolver symbolSolver = new JavaSymbolSolver(typeSolver);
-        StaticJavaParser.getConfiguration().setSymbolResolver(symbolSolver);
-
-        List<Path> javaFiles;
-        try (Stream<Path> files = Files.walk(sourceRoot)) {
-            javaFiles = files.filter(p -> p.toString().endsWith(".java")).collect(Collectors.toList());
-        }
+        StaticJavaParser.setConfiguration(parserConfig);
+        Optional<SymbolResolver> symbolResolver = parserConfig.getSymbolResolver();
 
         Map<Path, Map<Integer, List<String>>> usageMap = new HashMap<>();
+        // 4) Применяем конфигурацию ко всем SourceRoot-ам и парсим
+        for (SourceRoot currentSourceRoot : projectRoot.getSourceRoots()) {
+            currentSourceRoot.setParserConfiguration(parserConfig);
 
-        for (Path file : javaFiles) {
-            CompilationUnit cu = StaticJavaParser.parse(file);
-            Map<Integer, List<String>> lineDeps = new HashMap<>();
-            getAccept(cu, symbolSolver, lineDeps);
-            usageMap.put(file, lineDeps);
+            currentSourceRoot.parse("", (localPath, absolutePath, result) -> {
+                result.ifSuccessful(cu -> {
+                    Map<Integer, List<String>> lineDeps = new HashMap<>();
+                    getAccept(cu, symbolResolver.orElseThrow(), lineDeps);
+                    usageMap.put(localPath, lineDeps);
+                });
+                // Мы не сохраняем изменённые файлы на диск
+                return SourceRoot.Callback.Result.DONT_SAVE;
+            });
         }
 
         usageMap.forEach((file, deps) -> {
@@ -97,15 +68,9 @@ public class DependencyAnalyzer {
                                 e.getKey(), String.join(", ", e.getValue()));
                     });
         });
-//        usageMap.forEach((file, deps) -> {
-//            System.out.println("File: " + file);
-//            deps.entrySet().stream()
-//                    .sorted(Map.Entry.comparingByKey()) // сортировка по line (ключу)
-//                    .forEach(entry -> System.out.printf("  Line %d -> %s%n", entry.getKey(), entry.getValue()));
-//        });
     }
 
-    private static void getAccept(CompilationUnit cu, JavaSymbolSolver symbolSolver, Map<Integer, List<String>> lineDeps) {
+    private static void getAccept(CompilationUnit cu, SymbolResolver symbolSolver, Map<Integer, List<String>> lineDeps) {
         cu.accept(new VoidVisitorAdapter<>() {
             @Override
             public void visit(NameExpr n, Object arg) {
@@ -197,7 +162,7 @@ public class DependencyAnalyzer {
         }, null);
     }
 
-    private static void handleNode(Node n, JavaSymbolSolver symbolSolver, Map<Integer, List<String>> lineDeps, CompilationUnit cu) {
+    private static void handleNode(Node n, SymbolResolver symbolSolver, Map<Integer, List<String>> lineDeps, CompilationUnit cu) {
         int line = n.getRange().map(r -> r.begin.line).orElse(-1);
         try {
             List<String> possibleImports = new ArrayList<>();
