@@ -9,11 +9,18 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
-
+/**
+ * Коннектор для извлечения зависимостей
+ */
 public class GradleConnectorWrapper {
 
-    public static PathResult GetClassAndSourcePaths(Path projectPath) {
-        File projectDir = new File(projectPath.toString());
+    /**
+     * Получить пути к исходникам и зависимости проекта
+     * @param projectRootPath
+     * @return
+     */
+    public static PathResult GetClassAndSourcePaths(Path projectRootPath) {
+        File projectDir = new File(projectRootPath.toString());
 
         List<String> sourcepath = new ArrayList<>();
         List<String> classpath = new ArrayList<>();

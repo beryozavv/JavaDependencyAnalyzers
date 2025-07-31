@@ -11,7 +11,10 @@ import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.*;
 
-public class EclipseDependencyAnalyzer {
+/**
+ * Анализатор зависимостей в Java-файлах
+ */
+public class JavaDependencyAnalyzer {
 
     // Корневой путь проекта для анализа
     private final Path sourceRoot;
@@ -31,26 +34,12 @@ public class EclipseDependencyAnalyzer {
      * @param sourceRoot корневой каталог с исходным кодом Java
      * @param classpath  список путей к JAR-файлам для разрешения зависимостей
      */
-    public EclipseDependencyAnalyzer(Path sourceRoot, List<String> classpath) {
+    public JavaDependencyAnalyzer(Path sourceRoot, List<String> classpath) {
         this.sourceRoot = sourceRoot;
         this.classpath = classpath;
 
         // Инициализация стратегий
         initializeExtractorStrategies();
-    }
-
-    /**
-     * Инициализирует стратегии для извлечения зависимостей
-     */
-    private void initializeExtractorStrategies() {
-        extractorStrategies.put(MethodInvocation.class, new MethodInvocationDependencyExtractor());
-        extractorStrategies.put(ClassInstanceCreation.class, new ClassInstanceCreationDependencyExtractor());
-        extractorStrategies.put(SimpleName.class, new SimpleNameDependencyExtractor());
-        extractorStrategies.put(SimpleType.class, new SimpleTypeDependencyExtractor());
-        extractorStrategies.put(TypeLiteral.class, new TypeLiteralDependencyExtractor());
-        extractorStrategies.put(FieldAccess.class, new FieldAccessDependencyExtractor());
-        extractorStrategies.put(QualifiedName.class, new QualifiedNameDependencyExtractor());
-        extractorStrategies.put(InstanceofExpression.class, new InstanceofExpressionDependencyExtractor());
     }
 
     /**
@@ -75,40 +64,46 @@ public class EclipseDependencyAnalyzer {
     }
 
     /**
+     * Инициализирует стратегии для извлечения зависимостей
+     */
+    private void initializeExtractorStrategies() {
+        extractorStrategies.put(MethodInvocation.class, new MethodInvocationDependencyExtractor());
+        extractorStrategies.put(ClassInstanceCreation.class, new ClassInstanceCreationDependencyExtractor());
+        extractorStrategies.put(SimpleName.class, new SimpleNameDependencyExtractor());
+        extractorStrategies.put(SimpleType.class, new SimpleTypeDependencyExtractor());
+        extractorStrategies.put(TypeLiteral.class, new TypeLiteralDependencyExtractor());
+        extractorStrategies.put(FieldAccess.class, new FieldAccessDependencyExtractor());
+        extractorStrategies.put(QualifiedName.class, new QualifiedNameDependencyExtractor());
+        extractorStrategies.put(InstanceofExpression.class, new InstanceofExpressionDependencyExtractor());
+    }
+
+    /**
      * Анализирует один Java-файл и собирает информацию о зависимостях
      *
      * @param javaFile путь к Java-файлу
      * @throws IOException при ошибке чтения файла
      */
     private void analyzeJavaFile(Path javaFile) throws IOException {
-        // Читаем содержимое файла
-        String source = Files.readString(javaFile, StandardCharsets.UTF_8);
-
-        // Создаем и настраиваем парсер AST
-        ASTParser parser = ASTParser.newParser(AST.JLS21);
-        parser.setSource(source.toCharArray());
-        parser.setResolveBindings(true);
-        parser.setBindingsRecovery(true);
-        parser.setKind(ASTParser.K_COMPILATION_UNIT);
-
-        // Устанавливаем опции компилятора
-        Map<String, String> options = JavaCore.getOptions();
-        JavaCore.setComplianceOptions(JavaCore.VERSION_21, options);
-        parser.setCompilerOptions(options);
-
-        // Устанавливаем classpath для разрешения зависимостей
-        if (!classpath.isEmpty()) {
-            String[] classpathEntries = classpath.toArray(String[]::new);
-            parser.setEnvironment(classpathEntries, new String[]{sourceRoot.toString()}, null, true);
-        }
-        parser.setUnitName("Example.java");
-
-        // Получаем единицу компиляции (CompilationUnit)
-        CompilationUnit cu = (CompilationUnit) parser.createAST(null);
+        CompilationUnit cu = parseJavaFile(javaFile);
 
         // Создаем карту для хранения зависимостей по строкам в этом файле
         Map<Integer, List<String>> lineDepMap = new HashMap<>();
 
+        runVisitor(cu, lineDepMap);
+
+        // Если в файле найдены зависимости, добавляем их в общую карту
+        if (!lineDepMap.isEmpty()) {
+            usageMap.put(javaFile, lineDepMap);
+        }
+    }
+
+    /**
+     * Создает ASTVisitor и подписывается на события
+     *
+     * @param cu
+     * @param lineDepMap
+     */
+    private void runVisitor(CompilationUnit cu, Map<Integer, List<String>> lineDepMap) {
         // Запускаем посетителя для обхода AST
         cu.accept(new ASTVisitor() {
 
@@ -168,11 +163,41 @@ public class EclipseDependencyAnalyzer {
                 return true;
             }
         });
+    }
 
-        // Если в файле найдены зависимости, добавляем их в общую карту
-        if (!lineDepMap.isEmpty()) {
-            usageMap.put(javaFile, lineDepMap);
+    /**
+     * Создает ASTParser, конфигурирует его и получает (CompilationUnit) ASTNode
+     *
+     * @param javaFile
+     * @return
+     * @throws IOException
+     */
+    private CompilationUnit parseJavaFile(Path javaFile) throws IOException {
+        // Читаем содержимое файла
+        String source = Files.readString(javaFile, StandardCharsets.UTF_8);
+
+        // Создаем и настраиваем парсер AST
+        ASTParser parser = ASTParser.newParser(AST.JLS21);
+        parser.setSource(source.toCharArray());
+        parser.setResolveBindings(true);
+        parser.setBindingsRecovery(true);
+        parser.setKind(ASTParser.K_COMPILATION_UNIT);
+
+        // Устанавливаем опции компилятора
+        Map<String, String> options = JavaCore.getOptions();
+        JavaCore.setComplianceOptions(JavaCore.VERSION_21, options);
+        parser.setCompilerOptions(options);
+
+        // Устанавливаем classpath для разрешения зависимостей
+        if (!classpath.isEmpty()) {
+            String[] classpathEntries = classpath.toArray(String[]::new);
+            parser.setEnvironment(classpathEntries, new String[]{sourceRoot.toString()}, null, true);
         }
+        parser.setUnitName("Example.java");
+
+        // Получаем единицу компиляции (CompilationUnit)
+        CompilationUnit cu = (CompilationUnit) parser.createAST(null);
+        return cu;
     }
 
     /**
@@ -227,43 +252,4 @@ public class EclipseDependencyAnalyzer {
         return cu.getLineNumber(node.getStartPosition());
     }
 
-    /**
-     * Основной метод для запуска анализатора
-     *
-     * @param args аргументы командной строки: путь к проекту и пути к JAR-файлам
-     */
-    public static void main(String[] args) {
-        if (args.length < 1) {
-            System.out.println("""
-                    Usage: java -jar dependency-analyzer.jar <source-root>
-                      <source-root> - path to Java source code""");
-            System.exit(1);
-        }
-
-        try {
-            Path sourceRoot = Path.of(args[0]);
-
-            PathResult pathResult = GradleConnectorWrapper.GetClassAndSourcePaths(sourceRoot);
-            String first = pathResult.getSourcePath().getFirst();
-
-            // Создаем и запускаем анализатор
-            EclipseDependencyAnalyzer analyzer = new EclipseDependencyAnalyzer(Path.of(first), pathResult.getClassPath());
-            Map<Path, Map<Integer, List<String>>> results = analyzer.analyze();
-
-            // Выводим результаты анализа
-            results.forEach((file, deps) -> {
-                System.out.println("File: " + file);
-                deps.entrySet().stream()
-                        .sorted(Map.Entry.comparingByKey())
-                        .forEach(e ->
-                                System.out.printf("  Line %d -> %s%n", e.getKey(), String.join(", ", e.getValue()))
-                        );
-            });
-
-        } catch (Exception e) {
-            System.err.println("Error: " + e.getMessage());
-            e.printStackTrace();
-            System.exit(1);
-        }
-    }
 }
