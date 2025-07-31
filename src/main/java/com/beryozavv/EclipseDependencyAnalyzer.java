@@ -16,7 +16,7 @@ public class EclipseDependencyAnalyzer {
     private final Path sourceRoot;
 
     // Список путей к библиотекам для разрешения зависимостей
-    private final List<Path> classpath;
+    private final List<String> classpath;
 
     // Результаты анализа: файл -> (строка -> список символов)
     private final Map<Path, Map<Integer, List<String>>> usageMap = new HashMap<>();
@@ -27,7 +27,7 @@ public class EclipseDependencyAnalyzer {
      * @param sourceRoot корневой каталог с исходным кодом Java
      * @param classpath  список путей к JAR-файлам для разрешения зависимостей
      */
-    public EclipseDependencyAnalyzer(Path sourceRoot, List<Path> classpath) {
+    public EclipseDependencyAnalyzer(Path sourceRoot, List<String> classpath) {
         this.sourceRoot = sourceRoot;
         this.classpath = classpath;
     }
@@ -77,9 +77,7 @@ public class EclipseDependencyAnalyzer {
 
         // Устанавливаем classpath для разрешения зависимостей
         if (!classpath.isEmpty()) {
-            String[] classpathEntries = classpath.stream()
-                    .map(Path::toString)
-                    .toArray(String[]::new);
+            String[] classpathEntries = classpath.stream().toArray(String[]::new);
             parser.setEnvironment(classpathEntries, new String[]{sourceRoot.toString()}, null, true);
         }
         parser.setUnitName("Example.java");
@@ -361,12 +359,9 @@ public class EclipseDependencyAnalyzer {
 
             PathResult pathResult = MyGradleConnector.GetClassAndSourcePaths(sourceRoot);
             String first = pathResult.getSourcePath().getFirst();
-            List<Path> pathList = pathResult.getClassPath().stream()
-                    .map(Paths::get)
-                    .collect(Collectors.toList());
 
             // Создаем и запускаем анализатор
-            EclipseDependencyAnalyzer analyzer = new EclipseDependencyAnalyzer(Path.of(first), pathList);
+            EclipseDependencyAnalyzer analyzer = new EclipseDependencyAnalyzer(Path.of(first), pathResult.getClassPath());
             Map<Path, Map<Integer, List<String>>> results = analyzer.analyze();
 
             // Выводим результаты анализа
