@@ -1,7 +1,6 @@
 package com.beryozavv;
 
 import com.beryozavv.dependencyExtractorStrategies.*;
-import com.github.javaparser.quality.NotNull;
 import org.eclipse.jdt.core.dom.*;
 import org.eclipse.jdt.core.JavaCore;
 
@@ -52,7 +51,7 @@ public class JavaDependencyAnalyzer {
         // Проходим по всем Java-файлам в проекте
         Files.walkFileTree(sourceRoot, new SimpleFileVisitor<>() {
             @Override
-            public FileVisitResult visitFile(@NotNull Path file, @NotNull BasicFileAttributes attrs) throws IOException {
+            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
                 if (file.toString().endsWith(".java")) {
                     analyzeJavaFile(file);
                 }
