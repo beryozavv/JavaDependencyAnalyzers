@@ -1,8 +1,8 @@
 package com.beryozavv;
 
 import java.nio.file.Path;
-import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 
 public class AnalyzerMain {
@@ -21,7 +21,7 @@ public class AnalyzerMain {
             String first = pathResult.getSourcePath().getFirst();
 
             JavaDependencyAnalyzer analyzer = new JavaDependencyAnalyzer(Path.of(first), pathResult.getClassPath());
-            Map<Path, Map<Integer, List<String>>> results = analyzer.analyze();
+            Map<Path, Map<Integer, Set<String>>> results = analyzer.analyze();
 
             results.forEach((file, deps) -> {
                 System.out.println("File: " + file);

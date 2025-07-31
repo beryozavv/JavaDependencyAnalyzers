@@ -23,7 +23,7 @@ public class JavaDependencyAnalyzer {
     private final List<String> classpath;
 
     // Результаты анализа: файл -> (строка -> список символов)
-    private final Map<Path, Map<Integer, List<String>>> usageMap = new HashMap<>();
+    private final Map<Path, Map<Integer, Set<String>>> usageMap = new HashMap<>();
 
     // Стратегии для извлечения зависимостей
     private final Map<Class<? extends ASTNode>, DependencyExtractorStrategy<? extends ASTNode>> extractorStrategies = new HashMap<>();
@@ -48,7 +48,7 @@ public class JavaDependencyAnalyzer {
      * @return карта зависимостей для каждого файла и строки
      * @throws IOException при ошибке доступа к файлам
      */
-    public Map<Path, Map<Integer, List<String>>> analyze() throws IOException {
+    public Map<Path, Map<Integer, Set<String>>> analyze() throws IOException {
         // Проходим по всем Java-файлам в проекте
         Files.walkFileTree(sourceRoot, new SimpleFileVisitor<>() {
             @Override
@@ -87,7 +87,7 @@ public class JavaDependencyAnalyzer {
         CompilationUnit cu = parseJavaFile(javaFile);
 
         // Создаем карту для хранения зависимостей по строкам в этом файле
-        Map<Integer, List<String>> lineDepMap = new HashMap<>();
+        Map<Integer, Set<String>> lineDepMap = new HashMap<>();
 
         runVisitor(cu, lineDepMap);
 
@@ -103,7 +103,7 @@ public class JavaDependencyAnalyzer {
      * @param cu
      * @param lineDepMap
      */
-    private void runVisitor(CompilationUnit cu, Map<Integer, List<String>> lineDepMap) {
+    private void runVisitor(CompilationUnit cu, Map<Integer, Set<String>> lineDepMap) {
         // Запускаем посетителя для обхода AST
         cu.accept(new ASTVisitor() {
 
@@ -206,7 +206,7 @@ public class JavaDependencyAnalyzer {
      * @param node       узел AST для анализа
      * @param lineDepMap карта для сохранения зависимостей по строкам
      */
-    private void handleNode(ASTNode node, Map<Integer, List<String>> lineDepMap) {
+    private void handleNode(ASTNode node, Map<Integer, Set<String>> lineDepMap) {
         int lineNumber = getLineNumber(node);
         if (lineNumber == -1) return;
 
@@ -223,7 +223,7 @@ public class JavaDependencyAnalyzer {
 
         // Если найдены зависимости, добавляем их в карту
         if (!dependencies.isEmpty()) {
-            lineDepMap.computeIfAbsent(lineNumber, k -> new ArrayList<>())
+            lineDepMap.computeIfAbsent(lineNumber, k -> new HashSet<>())
                     .addAll(dependencies);
         }
     }
