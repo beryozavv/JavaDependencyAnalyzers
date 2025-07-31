@@ -10,7 +10,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 
-public class MyGradleConnector {
+public class GradleConnectorWrapper {
 
     public static PathResult GetClassAndSourcePaths(Path projectPath) {
         File projectDir = new File(projectPath.toString());

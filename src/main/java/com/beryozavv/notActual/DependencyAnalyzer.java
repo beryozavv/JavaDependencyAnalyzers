@@ -1,5 +1,7 @@
-package com.beryozavv;
+package com.beryozavv.notActual;
 
+import com.beryozavv.GradleConnectorWrapper;
+import com.beryozavv.PathResult;
 import com.github.javaparser.StaticJavaParser;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.Node;
@@ -39,7 +41,7 @@ public class DependencyAnalyzer {
         typeSolver.add(new ClassLoaderTypeSolver(Thread.currentThread().getContextClassLoader()));
         //typeSolver.add(new JavaParserTypeSolver(sourceRoot));
 
-        PathResult pathResult = MyGradleConnector.GetClassAndSourcePaths(sourceRoot);
+        PathResult pathResult = GradleConnectorWrapper.GetClassAndSourcePaths(sourceRoot);
         TypeSolverUtil.addPathsToTypeSolver(typeSolver, pathResult);
 
         JavaSymbolSolver symbolSolver = new JavaSymbolSolver(typeSolver);

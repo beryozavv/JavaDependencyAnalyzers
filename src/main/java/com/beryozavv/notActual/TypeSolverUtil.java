@@ -1,10 +1,10 @@
-package com.beryozavv;
+package com.beryozavv.notActual;
 
+import com.beryozavv.PathResult;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.CombinedTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.JavaParserTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.JarTypeSolver;
 
-import java.io.File;
 import java.io.IOException;
 import java.nio.file.Paths;
 

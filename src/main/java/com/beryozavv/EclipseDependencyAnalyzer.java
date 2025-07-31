@@ -1,5 +1,7 @@
 package com.beryozavv;
 
+import com.beryozavv.dependencyExtractorStrategies.*;
+import com.github.javaparser.quality.NotNull;
 import org.eclipse.jdt.core.dom.*;
 import org.eclipse.jdt.core.JavaCore;
 
@@ -8,7 +10,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.*;
-import java.util.stream.Collectors;
 
 public class EclipseDependencyAnalyzer {
 
@@ -21,6 +22,9 @@ public class EclipseDependencyAnalyzer {
     // Результаты анализа: файл -> (строка -> список символов)
     private final Map<Path, Map<Integer, List<String>>> usageMap = new HashMap<>();
 
+    // Стратегии для извлечения зависимостей
+    private final Map<Class<? extends ASTNode>, DependencyExtractorStrategy<? extends ASTNode>> extractorStrategies = new HashMap<>();
+
     /**
      * Создает анализатор зависимостей на основе Eclipse JDT Core
      *
@@ -30,6 +34,23 @@ public class EclipseDependencyAnalyzer {
     public EclipseDependencyAnalyzer(Path sourceRoot, List<String> classpath) {
         this.sourceRoot = sourceRoot;
         this.classpath = classpath;
+
+        // Инициализация стратегий
+        initializeExtractorStrategies();
+    }
+
+    /**
+     * Инициализирует стратегии для извлечения зависимостей
+     */
+    private void initializeExtractorStrategies() {
+        extractorStrategies.put(MethodInvocation.class, new MethodInvocationDependencyExtractor());
+        extractorStrategies.put(ClassInstanceCreation.class, new ClassInstanceCreationDependencyExtractor());
+        extractorStrategies.put(SimpleName.class, new SimpleNameDependencyExtractor());
+        extractorStrategies.put(SimpleType.class, new SimpleTypeDependencyExtractor());
+        extractorStrategies.put(TypeLiteral.class, new TypeLiteralDependencyExtractor());
+        extractorStrategies.put(FieldAccess.class, new FieldAccessDependencyExtractor());
+        extractorStrategies.put(QualifiedName.class, new QualifiedNameDependencyExtractor());
+        extractorStrategies.put(InstanceofExpression.class, new InstanceofExpressionDependencyExtractor());
     }
 
     /**
@@ -40,9 +61,9 @@ public class EclipseDependencyAnalyzer {
      */
     public Map<Path, Map<Integer, List<String>>> analyze() throws IOException {
         // Проходим по всем Java-файлам в проекте
-        Files.walkFileTree(sourceRoot, new SimpleFileVisitor<Path>() {
+        Files.walkFileTree(sourceRoot, new SimpleFileVisitor<>() {
             @Override
-            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+            public FileVisitResult visitFile(@NotNull Path file, @NotNull BasicFileAttributes attrs) throws IOException {
                 if (file.toString().endsWith(".java")) {
                     analyzeJavaFile(file);
                 }
@@ -77,7 +98,7 @@ public class EclipseDependencyAnalyzer {
 
         // Устанавливаем classpath для разрешения зависимостей
         if (!classpath.isEmpty()) {
-            String[] classpathEntries = classpath.stream().toArray(String[]::new);
+            String[] classpathEntries = classpath.toArray(String[]::new);
             parser.setEnvironment(classpathEntries, new String[]{sourceRoot.toString()}, null, true);
         }
         parser.setUnitName("Example.java");
@@ -167,25 +188,9 @@ public class EclipseDependencyAnalyzer {
         // Список для хранения FQN (полных имен классов) в этом узле
         List<String> dependencies = new ArrayList<>();
 
-        // Определяем тип узла и извлекаем соответствующую информацию
+        // Определяем тип узла и применяем соответствующую стратегию
         try {
-            if (node instanceof MethodInvocation) {
-                extractMethodInvocationDependencies((MethodInvocation) node, dependencies);
-            } else if (node instanceof ClassInstanceCreation) {
-                extractClassInstanceCreationDependencies((ClassInstanceCreation) node, dependencies);
-            } else if (node instanceof SimpleName) {
-                extractSimpleNameDependencies((SimpleName) node, dependencies);
-            } else if (node instanceof SimpleType) {
-                extractSimpleTypeDependencies((SimpleType) node, dependencies);
-            } else if (node instanceof TypeLiteral) {
-                extractTypeLiteralDependencies((TypeLiteral) node, dependencies);
-            } else if (node instanceof FieldAccess) {
-                extractFieldAccessDependencies((FieldAccess) node, dependencies);
-            } else if (node instanceof QualifiedName) {
-                extractQualifiedNameDependencies((QualifiedName) node, dependencies);
-            } else if (node instanceof InstanceofExpression) {
-                extractInstanceofExpressionDependencies((InstanceofExpression) node, dependencies);
-            }
+            applyExtractorStrategy(node, dependencies);
         } catch (Exception e) {
             // Игнорируем ошибки при попытке получить информацию о зависимостях
             System.err.println("Ошибка при обработке узла " + node + " в строке " + lineNumber + ": " + e.getMessage());
@@ -198,130 +203,17 @@ public class EclipseDependencyAnalyzer {
         }
     }
 
-    // Методы для извлечения зависимостей из различных типов узлов AST
-
-    private void extractMethodInvocationDependencies(MethodInvocation node, List<String> dependencies) {
-        IMethodBinding methodBinding = node.resolveMethodBinding();
-        if (methodBinding != null) {
-            ITypeBinding declaringClass = methodBinding.getDeclaringClass();
-            if (declaringClass != null) {
-                dependencies.add(declaringClass.getQualifiedName());
-            }
-
-            // Добавляем типы параметров
-            for (ITypeBinding paramType : methodBinding.getParameterTypes()) {
-                dependencies.add(paramType.getQualifiedName());
-            }
-
-            // Добавляем тип возвращаемого значения
-            ITypeBinding returnType = methodBinding.getReturnType();
-            if (returnType != null && !returnType.isPrimitive()) {
-                dependencies.add(returnType.getQualifiedName());
-            }
-        }
-    }
-
-    private void extractClassInstanceCreationDependencies(ClassInstanceCreation node, List<String> dependencies) {
-        ITypeBinding typeBinding = node.resolveTypeBinding();
-        if (typeBinding != null) {
-            dependencies.add(typeBinding.getQualifiedName());
-        }
-    }
-
-    private void extractSimpleNameDependencies(SimpleName node, List<String> dependencies) {
-        IBinding binding = node.resolveBinding();
-        if (binding == null) return;
-
-        if (binding instanceof ITypeBinding) {
-            // Ссылка на тип (класс, интерфейс, enum)
-            ITypeBinding typeBinding = (ITypeBinding) binding;
-            dependencies.add(typeBinding.getQualifiedName());
-        } else if (binding instanceof IVariableBinding) {
-            // Ссылка на переменную или поле
-            IVariableBinding varBinding = (IVariableBinding) binding;
-            ITypeBinding typeBinding = varBinding.getType();
-            if (typeBinding != null && !typeBinding.isPrimitive()) {
-                dependencies.add(typeBinding.getQualifiedName());
-            }
-        } else if (binding instanceof IMethodBinding) {
-            // Ссылка на метод
-            IMethodBinding methodBinding = (IMethodBinding) binding;
-            ITypeBinding declaringClass = methodBinding.getDeclaringClass();
-            if (declaringClass != null) {
-                dependencies.add(declaringClass.getQualifiedName());
-            }
-        }
-    }
-
-    private void extractSimpleTypeDependencies(SimpleType node, List<String> dependencies) {
-        ITypeBinding typeBinding = node.resolveBinding();
-        if (typeBinding != null) {
-            dependencies.add(typeBinding.getQualifiedName());
-        }
-    }
-
-    private void extractTypeLiteralDependencies(TypeLiteral node, List<String> dependencies) {
-        ITypeBinding typeBinding = node.resolveTypeBinding();
-        if (typeBinding != null) {
-            // Получаем тип, на который ссылается выражение Class<T>
-            ITypeBinding referencedType = typeBinding.getTypeArguments().length > 0 ?
-                    typeBinding.getTypeArguments()[0] : null;
-            if (referencedType != null) {
-                dependencies.add(referencedType.getQualifiedName());
-            } else {
-                dependencies.add(typeBinding.getQualifiedName());
-            }
-        }
-    }
-
-    private void extractFieldAccessDependencies(FieldAccess node, List<String> dependencies) {
-        IVariableBinding fieldBinding = node.resolveFieldBinding();
-        if (fieldBinding != null) {
-            // Тип поля
-            ITypeBinding fieldType = fieldBinding.getType();
-            if (fieldType != null && !fieldType.isPrimitive()) {
-                dependencies.add(fieldType.getQualifiedName());
-            }
-
-            // Тип класса, в котором объявлено поле
-            ITypeBinding declaringClass = fieldBinding.getDeclaringClass();
-            if (declaringClass != null) {
-                dependencies.add(declaringClass.getQualifiedName());
-            }
-        }
-    }
-
-    private void extractQualifiedNameDependencies(QualifiedName node, List<String> dependencies) {
-        IBinding binding = node.resolveBinding();
-        if (binding == null) return;
-
-        if (binding instanceof ITypeBinding) {
-            // Полное имя типа
-            ITypeBinding typeBinding = (ITypeBinding) binding;
-            dependencies.add(typeBinding.getQualifiedName());
-        } else if (binding instanceof IVariableBinding) {
-            // Ссылка на поле
-            IVariableBinding varBinding = (IVariableBinding) binding;
-
-            // Тип поля
-            ITypeBinding fieldType = varBinding.getType();
-            if (fieldType != null && !fieldType.isPrimitive()) {
-                dependencies.add(fieldType.getQualifiedName());
-            }
-
-            // Тип класса, в котором объявлено поле
-            ITypeBinding declaringClass = varBinding.getDeclaringClass();
-            if (declaringClass != null) {
-                dependencies.add(declaringClass.getQualifiedName());
-            }
-        }
-    }
-
-    private void extractInstanceofExpressionDependencies(InstanceofExpression node, List<String> dependencies) {
-        ITypeBinding typeBinding = node.getRightOperand().resolveBinding();
-        if (typeBinding != null) {
-            dependencies.add(typeBinding.getQualifiedName());
-        }
+    /**
+     * Применяет соответствующую стратегию для извлечения зависимостей из узла AST
+     *
+     * @param node         узел AST для анализа
+     * @param dependencies список для сохранения найденных зависимостей
+     */
+    @SuppressWarnings("unchecked")
+    private <T extends ASTNode> void applyExtractorStrategy(T node, List<String> dependencies) {
+        Class<? extends ASTNode> nodeClass = node.getClass();
+        DependencyExtractorStrategy<T> strategy = (DependencyExtractorStrategy<T>) extractorStrategies.get(nodeClass);
+        strategy.extractDependencies(node, dependencies);
     }
 
     /**
@@ -342,22 +234,16 @@ public class EclipseDependencyAnalyzer {
      */
     public static void main(String[] args) {
         if (args.length < 1) {
-            System.out.println("Usage: java -jar dependency-analyzer.jar <source-root> [<jar1> <jar2> ...]\n" +
-                    "  <source-root> - path to Java source code\n" +
-                    "  <jar1> <jar2> ... - optional paths to dependency JARs");
+            System.out.println("""
+                    Usage: java -jar dependency-analyzer.jar <source-root>
+                      <source-root> - path to Java source code""");
             System.exit(1);
         }
 
         try {
             Path sourceRoot = Path.of(args[0]);
 
-            // Собираем пути к JAR-файлам из аргументов
-            List<Path> classpath = new ArrayList<>();
-            for (int i = 1; i < args.length; i++) {
-                classpath.add(Path.of(args[i]));
-            }
-
-            PathResult pathResult = MyGradleConnector.GetClassAndSourcePaths(sourceRoot);
+            PathResult pathResult = GradleConnectorWrapper.GetClassAndSourcePaths(sourceRoot);
             String first = pathResult.getSourcePath().getFirst();
 
             // Создаем и запускаем анализатор
@@ -369,10 +255,9 @@ public class EclipseDependencyAnalyzer {
                 System.out.println("File: " + file);
                 deps.entrySet().stream()
                         .sorted(Map.Entry.comparingByKey())
-                        .forEach(e -> {
-                            System.out.printf("  Line %d -> %s%n",
-                                    e.getKey(), String.join(", ", e.getValue()));
-                        });
+                        .forEach(e ->
+                                System.out.printf("  Line %d -> %s%n", e.getKey(), String.join(", ", e.getValue()))
+                        );
             });
 
         } catch (Exception e) {
